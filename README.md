@@ -6,7 +6,7 @@
 
 [![小黑介绍视频（点击播放）](media/poster.jpg)](media/xiaohei_intro.mp4)
 
-▶️ [看 38 秒介绍视频](media/xiaohei_intro.mp4)（视频是用代码逐帧画出来的，源码在 [`media/intro.swift`](media/intro.swift)）
+▶️ [看 49 秒介绍视频（有声音）](media/xiaohei_intro.mp4)（画面逐帧画出来、配乐和音效用代码合成，源码在 [`media/intro.swift`](media/intro.swift)）
 
 ## 它解决什么问题
 
