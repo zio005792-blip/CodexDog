@@ -10,8 +10,8 @@ rm -rf build
 mkdir -p "$BUILD/Contents/MacOS" "$BUILD/Contents/Resources"
 swiftc -O -target "$(uname -m)-apple-macos14.0" main.swift -o "$BUILD/Contents/MacOS/CodexDog"
 cp Info.plist "$BUILD/Contents/"
-cp photos/*.heic photos/sausage.jpg clean_images.py "$BUILD/Contents/Resources/"
-cp -R photos/beg "$BUILD/Contents/Resources/"
+cp photos/*.heic photos/sausage.jpg photos/sleep.jpg clean_images.py "$BUILD/Contents/Resources/"
+cp -R photos/beg photos/stand photos/look "$BUILD/Contents/Resources/"
 codesign --force --sign - "$BUILD" >/dev/null 2>&1
 
 echo "📦 安装到 ~/Applications …"

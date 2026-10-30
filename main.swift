@@ -9,11 +9,16 @@ import UniformTypeIdentifiers
 let SUPPORT = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
     .appendingPathComponent("CodexDog", isDirectory: true)
 
-enum PoseKind: Int { case idle = 0, happy, dizzy }
+enum PoseKind: Int { case idle = 0, happy, dizzy, sleep, belly }
 
 // crop：在原照片里截取小狗所在区域（相对坐标，左上角为原点），避开地上的鞋子和纸屑
-// erase：尾巴尖旁边的白色纸屑（和尾巴挨着，crop 切不开），抠图前把这块里的白色像素涂成地面色
-struct Pose { let name: String; let file: String; let crop: CGRect; let erase: CGRect }
+// erase：尾巴尖旁边的白色纸屑（和尾巴挨着，crop 切不开），抠图前把这块里的白色像素涂成地面色；
+//        skin 为 true 时涂掉的是肤色（翻肚皮那张有只手抓着耳朵）
+// turn：抠完顺时针转几个 90°（翻肚皮是俯拍的，转过来才是四脚朝天）
+struct Pose {
+    let name: String; let file: String; let crop: CGRect; let erase: CGRect
+    var skin = false; var turn = 0
+}
 let POSES = [
     Pose(name: "idle",  file: "idle.heic",  crop: CGRect(x: 0.13, y: 0.15, width: 0.67, height: 0.61),
          erase: CGRect(x: 0.51, y: 0.16, width: 0.11, height: 0.10)),
@@ -21,10 +26,16 @@ let POSES = [
          erase: CGRect(x: 0.49, y: 0.19, width: 0.11, height: 0.10)),
     Pose(name: "dizzy", file: "dizzy.heic", crop: CGRect(x: 0.05, y: 0.19, width: 0.82, height: 0.52),
          erase: CGRect(x: 0.50, y: 0.18, width: 0.11, height: 0.10)),
+    Pose(name: "sleep", file: "sleep.jpg",  crop: CGRect(x: 0.15, y: 0.28, width: 0.65, height: 0.45),
+         erase: .zero),
+    Pose(name: "belly", file: "belly.heic", crop: CGRect(x: 0.0, y: 0.14, width: 0.93, height: 0.77),
+         erase: CGRect(x: 0.70, y: 0.60, width: 0.30, height: 0.40), skin: true, turn: 1),
 ]
 // 视频 IMG_5966 里的素材：0.2–1.1 秒站起来作揖（photos/beg，追淀粉肠时也是这个动作），
 // 0 秒那一帧的淀粉肠（photos/sausage.jpg）
+// IMG_6030 7.7–8.6 秒正面站起来讨吃（photos/stand，刚钻出来时），IMG_5965 0–1.6 秒蹲着左右张望（photos/look）
 let BEG_FPS = 15.0
+let LOOK_FPS = 10.0
 
 // MARK: - 隐藏系统光标（后台 App 默认不能藏光标，这个私有开关很多光标工具都在用）
 
@@ -77,26 +88,29 @@ func opaqueBounds(_ ctx: CGContext) -> CGRect {
     return maxX < 0 ? .null : CGRect(x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1)
 }
 
-/// 把 rect（像素坐标，左上角为原点）里的白色纸屑涂成周围地面的平均色；小狗是黑的，不受影响
-func erasePaper(_ img: CGImage, _ rect: CGRect) -> CGImage? {
+/// 把 rect（像素坐标，左上角为原点）里的白色纸屑（skin 时是手的肤色）涂成周围地面的平均色；小狗是黑的，不受影响
+func erasePaper(_ img: CGImage, _ rect: CGRect, skin: Bool = false) -> CGImage? {
     let w = img.width, h = img.height
     guard let ctx = rgbaContext(img), let px = ctx.data?.assumingMemoryBound(to: UInt8.self) else { return nil }
     let box = rect.intersection(CGRect(x: 0, y: 0, width: w, height: h))
     guard !box.isEmpty else { return img }
     let xs = Int(box.minX)..<Int(box.maxX), ys = Int(box.minY)..<Int(box.maxY)
     func luma(_ i: Int) -> Int { (Int(px[i]) * 3 + Int(px[i + 1]) * 6 + Int(px[i + 2])) / 10 }
+    func junk(_ i: Int) -> Bool {
+        skin ? Int(px[i]) > 90 && Int(px[i]) > Int(px[i + 2]) + 28 : luma(i) >= 190
+    }
 
     // 地面色：框里中等亮度像素的平均
     var sum = [0, 0, 0], n = 0
     for y in ys { for x in xs {
         let i = (y * w + x) * 4, l = luma(i)
-        if l > 100 && l < 190 { sum[0] += Int(px[i]); sum[1] += Int(px[i + 1]); sum[2] += Int(px[i + 2]); n += 1 }
+        if l > 100 && l < 190 && !junk(i) { sum[0] += Int(px[i]); sum[1] += Int(px[i + 1]); sum[2] += Int(px[i + 2]); n += 1 }
     } }
     guard n > 0 else { return img }
     let floor = sum.map { UInt8($0 / n) }
     for y in ys { for x in xs {
         let i = (y * w + x) * 4
-        if luma(i) >= 190 { px[i] = floor[0]; px[i + 1] = floor[1]; px[i + 2] = floor[2] }
+        if junk(i) { px[i] = floor[0]; px[i + 1] = floor[1]; px[i + 2] = floor[2] }
     } }
     return ctx.makeImage()
 }
@@ -133,6 +147,18 @@ func liftSubject(_ img: CGImage, biggestOnly: Bool = false, cropToExtent: Bool =
     }
 }
 
+/// 顺时针转 90°
+func rotateCW(_ img: CGImage) -> CGImage? {
+    let w = img.width, h = img.height
+    guard let ctx = CGContext(data: nil, width: h, height: w, bitsPerComponent: 8, bytesPerRow: h * 4,
+                              space: CGColorSpaceCreateDeviceRGB(),
+                              bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+    ctx.translateBy(x: 0, y: CGFloat(w))
+    ctx.rotate(by: -.pi / 2)
+    ctx.draw(img, in: CGRect(x: 0, y: 0, width: w, height: h))
+    return ctx.makeImage()
+}
+
 func makeSprites(resources: URL) -> [CGImage?] {
     try? FileManager.default.createDirectory(at: SUPPORT, withIntermediateDirectories: true)
     return POSES.map { (p: Pose) -> CGImage? in
@@ -145,16 +171,18 @@ func makeSprites(resources: URL) -> [CGImage?] {
         let er = CGRect(x: p.erase.minX * fw, y: p.erase.minY * fh,
                         width: p.erase.width * fw, height: p.erase.height * fh).integral
         let cropped = full.cropping(to: r) ?? full
-        let cleaned = erasePaper(cropped, er.offsetBy(dx: -r.minX, dy: -r.minY)) ?? cropped
-        let out = liftSubject(cleaned) ?? cleaned
+        let cleaned = erasePaper(cropped, er.offsetBy(dx: -r.minX, dy: -r.minY), skin: p.skin) ?? cropped
+        var out = liftSubject(cleaned, biggestOnly: p.skin) ?? cleaned
+        for _ in 0..<p.turn { out = rotateCW(out) ?? out }
         savePNG(out, cache)
         return out
     }
 }
 
-/// 作揖动画帧：每帧只留小狗，去掉沾在毛上的叶子（小黑全身黑，鲜艳的亮色都不是它），
-/// 再统一裁到所有帧的并集，播放时不会抖
-func makeFrames(_ folder: String, resources: URL) -> [CGImage] {
+/// 视频动画帧：每帧只留小狗，再统一裁到所有帧的并集，播放时不会抖。
+/// leaves：作揖那段毛上粘着叶子，去掉（小黑全身黑，鲜艳的亮色都不是它）
+/// align：手持拍的镜头会晃，把每帧小狗的脚底中点对齐到同一个位置
+func makeFrames(_ folder: String, resources: URL, leaves: Bool = false, align: Bool = false) -> [CGImage] {
     let dir = SUPPORT.appendingPathComponent(folder, isDirectory: true)
     let srcDir = resources.appendingPathComponent(folder, isDirectory: true)
     let names = ((try? FileManager.default.contentsOfDirectory(atPath: srcDir.path)) ?? [])
@@ -163,7 +191,6 @@ func makeFrames(_ folder: String, resources: URL) -> [CGImage] {
     if !names.isEmpty && cached.count == names.count { return cached }
 
     var ctxs: [CGContext] = []
-    var union = CGRect.null
     for n in names {
         guard let src = loadCG(srcDir.appendingPathComponent(n), maxPixel: 0),
               let lifted = liftSubject(src, biggestOnly: true, cropToExtent: false),
@@ -171,18 +198,37 @@ func makeFrames(_ folder: String, resources: URL) -> [CGImage] {
         // 叶子粘在头顶边缘：头顶这一条里发亮的也去掉（眼睛在更下面，不会误伤眼睛的反光）
         let body = opaqueBounds(ctx)
         let headTop = body.isNull ? 0 : Int(body.minY + body.height * 0.08)
-        for i in stride(from: 0, to: ctx.width * ctx.height * 4, by: 4) {
+        for i in stride(from: 0, to: leaves ? ctx.width * ctx.height * 4 : 0, by: 4) {
             let r = Int(px[i]), g = Int(px[i + 1]), b = Int(px[i + 2])
             let a = max(Int(px[i + 3]), 1), luma = (r * 3 + g * 6 + b) * 255 / 10 / a
             let leaf = (g > r + 20 && g > b + 10) || (r > 90 && r > b + 45)
                 || (i / 4 / ctx.width < headTop && luma > 125)
             if leaf { px[i] = 0; px[i + 1] = 0; px[i + 2] = 0; px[i + 3] = 0 }
         }
-        union = union.union(opaqueBounds(ctx))
         ctxs.append(ctx)
     }
+    // 每帧小狗的包围盒；对齐时以脚底中点为准，算出各帧的偏移
+    let boxes = ctxs.map { opaqueBounds($0) }
+    let feet = boxes.map { $0.isNull ? CGPoint.zero : CGPoint(x: $0.midX, y: $0.maxY) }
+    let ref = feet.first ?? .zero
+    let shifts = feet.map { align ? CGPoint(x: ref.x - $0.x, y: ref.y - $0.y) : .zero }
+    var union = CGRect.null
+    for (b, d) in zip(boxes, shifts) where !b.isNull { union = union.union(b.offsetBy(dx: d.x, dy: d.y)) }
     guard !union.isNull else { return [] }
-    let outs = ctxs.compactMap { $0.makeImage()?.cropping(to: union) }
+    let outs = zip(ctxs, shifts).compactMap { (ctx, d) -> CGImage? in
+        guard let img = ctx.makeImage() else { return nil }
+        if !align { return img.cropping(to: union) }
+        // 平移后再裁：画到一块和 union 一样大的透明画布上（CGContext 原点在左下）
+        let w = Int(union.width), h = Int(union.height)
+        guard let out = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+                                  space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        let x = d.x - union.minX
+        let yTop = d.y - union.minY
+        out.draw(img, in: CGRect(x: x, y: CGFloat(h) - yTop - CGFloat(img.height),
+                                 width: CGFloat(img.width), height: CGFloat(img.height)))
+        return out.makeImage()
+    }
     try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     for (n, out) in zip(names, outs) {
         savePNG(out, dir.appendingPathComponent(n.replacingOccurrences(of: ".jpg", with: ".png")))
@@ -376,14 +422,21 @@ final class Pet: NSObject {
     let begTime: TimeInterval = 1.0       // 刚出来先作揖一会儿，再开始追
     let chaseTimeout: TimeInterval = 15   // 一直追不上，就一个飞扑抢走
     let runSpeed: CGFloat = 650           // 追淀粉肠的速度（点/秒），鼠标甩快了它就追不上
-    let idleHide: TimeInterval = 25       // 鼠标多久没来就跑回角落躲起来
+    let idleHide: TimeInterval = 45       // 鼠标多久没来就跑回角落躲起来
+    let sleepAfter: TimeInterval = 15     // 没人理多久就趴下睡觉
+    let bellyAfter: TimeInterval = 1.5    // 鼠标在身上停多久就翻肚皮
     var panel: NSPanel!
     var view: DogView!
     let dog = CALayer()
     let bubble = CALayer()
     let text = CATextLayer()
-    var sprites: [CGImage?] = [nil, nil, nil]
-    var begFrames: [CGImage] = []
+    var sprites: [CGImage?] = [nil, nil, nil, nil, nil]
+    var begFrames: [CGImage] = []         // 侧身作揖（追淀粉肠）
+    var standFrames: [CGImage] = []       // 正面站起来讨吃（刚钻出来）
+    var lookFrames: [CGImage] = []        // 蹲着左右张望（闲着的时候）
+    var pose = PoseKind.idle
+    var hoverStart = Date()
+    var nextLook = Date()
     let sausage = SausageCursor()
     let shake = ShakeDetector()
     // begging：刚钻出来作揖；chasing：追淀粉肠；returning：跑回角落准备躲起来
@@ -484,11 +537,15 @@ final class Pet: NSObject {
         let res = resources
         DispatchQueue.global(qos: .userInitiated).async {
             let s = makeSprites(resources: res)
-            let beg = makeFrames("beg", resources: res)
+            let beg = makeFrames("beg", resources: res, leaves: true)
+            let stand = makeFrames("stand", resources: res, align: true)
+            let look = makeFrames("look", resources: res, align: true)
             let sau = makeSausage(resources: res)
             DispatchQueue.main.async {
                 self.sprites = s
                 self.begFrames = beg
+                self.standFrames = stand.isEmpty ? beg : stand
+                self.lookFrames = look
                 if let sau { self.sausage.setImage(sau) }
                 done()
             }
@@ -508,6 +565,7 @@ final class Pet: NSObject {
         case .begging:
             sausage.follow(m)
             if now.timeIntervalSince(begStarted) > begTime {
+                playFrames(begFrames)
                 st = .chasing
                 begStarted = now
                 hideBubble?.cancel()
@@ -528,8 +586,23 @@ final class Pet: NSObject {
         case .returning:
             if runToward(cornerOrigin(homeScreen), dt: dt) { st = .idle; hideDog() }
         case .idle:
-            if hovering || menuOpen { lastSeen = now }
-            else if now.timeIntervalSince(lastSeen) > idleHide { hideDog() }
+            if hovering || menuOpen {
+                lastSeen = now
+                // 摸着不走，就翻过来露肚皮
+                if hovering && pose == .happy && now.timeIntervalSince(hoverStart) > bellyAfter
+                    && now.timeIntervalSince(fedAt) > 1.6 {
+                    setPose(.belly)
+                    bounce()
+                    say("翻肚皮～摸这里！", seconds: 2.5)
+                }
+            } else if now.timeIntervalSince(lastSeen) > idleHide {
+                hideDog()
+            } else if now.timeIntervalSince(lastSeen) > sleepAfter {
+                if pose != .sleep { fallAsleep() }
+            } else if now > nextLook && pose == .idle && dog.animation(forKey: "beg") == nil
+                        && now.timeIntervalSince(fedAt) > 2 {
+                lookAround()
+            }
         default:
             break
         }
@@ -586,7 +659,7 @@ final class Pet: NSObject {
         panel.setFrameOrigin(NSPoint(x: max(vf.minX, min(m.x - W / 2 - 380, vf.maxX - W)), y: vf.minY))
         panel.orderFrontRegardless()
         sausage.show()
-        playBeg()
+        playFrames(standFrames)
         slide(in: true)
         say("汪！淀粉肠！", hold: true)
     }
@@ -602,7 +675,7 @@ final class Pet: NSObject {
         guard on != running else { return }
         running = on
         if on {
-            if dog.animation(forKey: "beg") == nil { playBeg() }
+            if dog.animation(forKey: "beg") == nil { playFrames(begFrames) }
             let hop = CAKeyframeAnimation(keyPath: "position.y")
             hop.values = [4, 16, 4]
             hop.duration = 0.3
@@ -687,30 +760,52 @@ final class Pet: NSObject {
         guard let cg = sprites[k.rawValue] ?? sprites[0] else { return }
         dog.removeAnimation(forKey: "beg")
         setRunning(false)
+        pose = k
         show(cg)
     }
 
-    /// 视频里的作揖动作，来回播放
-    func playBeg() {
+    /// 视频里的动作，来回播放；once 时只来回一遍，播完回到平时的样子
+    func playFrames(_ frames: [CGImage], fps: Double = BEG_FPS, once: Bool = false) {
+        guard let first = frames.first else { return }
         breathe(false)
         wobble(false)
-        show(begFrames[0])
-        let seq = begFrames + begFrames.reversed().dropFirst().dropLast()
+        show(first)
+        let seq = frames + frames.reversed().dropFirst().dropLast()
         let a = CAKeyframeAnimation(keyPath: "contents")
-        a.values = seq
+        a.values = once ? seq + [first] : seq
         a.calculationMode = .discrete
-        a.duration = Double(seq.count) / BEG_FPS
-        a.repeatCount = .infinity
+        a.duration = Double(a.values!.count) / fps
+        a.repeatCount = once ? 1 : .infinity
         dog.add(a, forKey: "beg")
     }
 
-    func breathe(_ on: Bool) {
+    /// 闲着的时候蹲下来左右张望一下
+    func lookAround() {
+        nextLook = Date().addingTimeInterval(.random(in: 6...11))
+        guard !lookFrames.isEmpty else { return }
+        pose = .idle
+        playFrames(lookFrames, fps: LOOK_FPS, once: true)
+        let dur = Double(lookFrames.count * 2 - 1) / LOOK_FPS
+        DispatchQueue.main.asyncAfter(deadline: .now() + dur) {
+            guard self.st == .idle, self.pose == .idle, !self.hovering else { return }
+            self.setPose(.idle)
+            self.breathe(true)
+        }
+    }
+
+    func fallAsleep() {
+        setPose(.sleep)
+        breathe(true, slow: true)
+        say("Zzz…", hold: true)
+    }
+
+    func breathe(_ on: Bool, slow: Bool = false) {
         dog.removeAnimation(forKey: "breathe")
         guard on else { return }
         let a = CABasicAnimation(keyPath: "transform.scale.y")
         a.fromValue = 1.0
-        a.toValue = 1.03
-        a.duration = 1.6
+        a.toValue = slow ? 1.05 : 1.03
+        a.duration = slow ? 2.4 : 1.6
         a.autoreverses = true
         a.repeatCount = .infinity
         a.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
@@ -758,9 +853,18 @@ final class Pet: NSObject {
 
     func hover(_ inside: Bool) {
         hovering = inside
-        if inside { lastSeen = Date() }
-        guard st == .idle else { return }
-        setPose(inside ? .happy : .idle)
+        guard st == .idle else { if inside { lastSeen = Date() }; return }
+        if inside {
+            if pose == .sleep { say("唔…你来啦", seconds: 2) }
+            hoverStart = Date()
+            setPose(.happy)
+            breathe(true)
+        } else {
+            setPose(.idle)
+            breathe(true)
+            nextLook = Date().addingTimeInterval(.random(in: 3...6))
+        }
+        lastSeen = Date()
     }
 
     // MARK: 清理
