@@ -8,6 +8,8 @@
 
 ▶️ [看 49 秒介绍视频（有声音）](media/xiaohei_intro.mp4)（画面逐帧画出来、配乐和音效用代码合成，源码在 [`media/intro.swift`](media/intro.swift)）
 
+📱 [竖屏短视频版（20 秒）](media/xiaohei_short.mp4)，适合发抖音 / 小红书，源码在 [`media/short.swift`](media/short.swift)
+
 ## 它解决什么问题
 
 在 Codex 里贴过截图、或者让它截过屏（computer use、浏览器操作、看设计稿……）之后，这些图片会以 base64 的形式**原样存进会话文件**（`~/.codex/sessions/*.jsonl`）。
@@ -79,7 +81,7 @@ bash install.sh
 | `main.swift` | 桌宠本体（AppKit + Core Animation） |
 | `install.sh` | 编译并安装 |
 | `photos/` | 小黑的照片、作揖动作帧和淀粉肠 |
-| `media/` | 介绍视频及生成它的代码 |
+| `media/` | 介绍视频、竖屏短视频及生成它们的代码 |
 
 ## 小提示
 
