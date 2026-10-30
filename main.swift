@@ -820,7 +820,7 @@ final class Pet: NSObject {
             let (n, mb) = r
             setPose(.happy)
             bounce()
-            say(n == 0 ? "已经很干净啦，没有旧图片～" : "清掉 \(n) 张图，瘦身 \(mb) MB！", seconds: 4)
+            say(n == 0 ? "已经很干净啦，没有旧图片～" : "清掉 \(n) 张图，每轮少传 \(mb) MB！", seconds: 4)
         } else {
             setPose(.idle)
             let last = out.split(separator: "\n").last.map(String.init) ?? "出错了"
@@ -841,7 +841,7 @@ final class Pet: NSObject {
     }
 
     func parse(_ out: String) -> (Int, String)? {
-        guard let re = try? NSRegularExpression(pattern: "清理 (\\d+) 张图片.*释放 ([\\d.]+) MB"),
+        guard let re = try? NSRegularExpression(pattern: "清理 (\\d+) 张图片.*去掉 ([\\d.]+) MB"),
               let m = re.firstMatch(in: out, range: NSRange(out.startIndex..., in: out)),
               let r1 = Range(m.range(at: 1), in: out), let r2 = Range(m.range(at: 2), in: out)
         else { return nil }

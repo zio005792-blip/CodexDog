@@ -76,10 +76,8 @@ def plan(lines, size, anchors):
     for o, off in pts[1:]:
         deficit = (off - base) - (starts[o] + added)
         if deficit < 0:
-            prev = max(p for p, _ in pts if p < o)
-            if not any(prev <= c < o for c in cleaned):
-                return "SKIP"
-            return f"行 {o} 比记录还长"
+            # 清理只会让行变短，比记录还长说明错位不是清理造成的
+            return "SKIP"
         if deficit:
             prev = max(p for p, _ in pts if p < o)
             cand = [c for c in cleaned if prev <= c < o and c not in pad]
