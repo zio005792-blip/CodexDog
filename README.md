@@ -10,6 +10,8 @@
 
 📱 [竖屏短视频版（20 秒）](media/xiaohei_short.mp4)，适合发抖音 / 小红书，源码在 [`media/short.swift`](media/short.swift)
 
+🌍 [English version (40s, vertical)](media/xiaohei_short_en.mp4)，节奏放慢，源码在 [`media/short_en.swift`](media/short_en.swift)
+
 ## 它解决什么问题
 
 在 Codex 里贴过截图、或者让它截过屏（computer use、浏览器操作、看设计稿……）之后，这些图片会以 base64 的形式**原样存进会话文件**（`~/.codex/sessions/*.jsonl`）。
